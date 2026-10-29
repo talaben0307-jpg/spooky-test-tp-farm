@@ -1,0 +1,510 @@
+--[[
+    Project: Halloween Door Manager Hub (Cleaned & Fixed)
+    Theme: Cyberpunk / Dark Red (Fluent UI Style)
+]]--
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local PathfindingService = game:GetService("PathfindingService")
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Xóa menu cũ nếu chạy lại
+if CoreGui:FindFirstChild("HalloweenDoorHub") then
+    CoreGui.HalloweenDoorHub:Destroy()
+end
+
+-- Quản lý trạng thái và cấu hình
+local Manager = {
+    ActiveDoors = {},
+    Connections = {},
+    CurrentPathWaypoints = nil,
+    GUI = {},
+    Config = {
+        DOORS_PATH = workspace:WaitForChild("Map"):WaitForChild("Core"):WaitForChild("HalloweenDoors"),
+        AUTO_FARM_TOGGLE_KEY = Enum.KeyCode.K,
+        AutoFarmEnabled = false,
+        FARM_SPEED = 130,
+        NORMAL_SPEED = 26,
+        FARM_TRIGGER_DISTANCE = 5,
+        PROMPT_TIMEOUT = 1,
+        WAYPOINT_TIMEOUT = 1,
+        WAYPOINT_ACCEPTANCE_RADIUS = 5,
+        NEW_DOOR_WAIT_TIME = 1,
+        SERVER_HOP_ENABLED = true,
+        SERVER_HOP_TIMEOUT = 5,
+        PATH_COLOR = Color3.fromRGB(70, 255, 170),
+        PATH_THICKNESS = 0.6,
+        PATH_TRANSPARENCY = 0.5,
+    }
+}
+
+-- Hàm hỗ trợ Queue on Teleport (Đổi server giữ nguyên trạng thái)
+local function getQueueOnTeleport()
+    local funcs = {wave, Wave, syn, fluxus, fluss, queue_on_teleport, executor}
+    for _, provider in ipairs(funcs) do
+        if type(provider) == "table" and type(provider.queue_on_teleport) == "function" then
+            return provider.queue_on_teleport
+        end
+    end
+    if type(queue_on_teleport) == "function" then
+        return queue_on_teleport
+    end
+    return nil
+end
+
+local function queueAutoFarmScript()
+    local qot = getQueueOnTeleport()
+    if qot then
+        pcall(function()
+            qot([[
+                _G = _G or {}
+                task.spawn(function()
+                    _G.AutoFarmQueued = true
+                end)
+            ]])
+        end)
+    end
+end
+
+LocalPlayer.OnTeleport:Connect(function(teleportState)
+    if teleportState == Enum.TeleportState.Started then
+        pcall(queueAutoFarmScript)
+    end
+end)
+
+-- Tạo Giao Diện Menu (Fluent/Cyberpunk Style)
+function Manager:_createGUI()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "HalloweenDoorHub"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = CoreGui
+
+    -- Main Frame
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(0, 380, 0, 240)
+    MainFrame.Position = UDim2.new(0.5, -190, 0.4, 0)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    MainFrame.BackgroundTransparency = 0.05
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Parent = ScreenGui
+
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 10)
+    UICorner.Parent = MainFrame
+
+    local UIStroke = Instance.new("UIStroke")
+    UIStroke.Color = Color3.fromRGB(180, 40, 60) -- Dark Red Cyberpunk accent
+    UIStroke.Thickness = 1.5
+    UIStroke.Parent = MainFrame
+
+    -- Tiêu đề Menu
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, -20, 0, 45)
+    Title.Position = UDim2.new(0, 15, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "🎃 HALLOWEEN DOOR AUTO FARM"
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 15
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = MainFrame
+
+    -- Status Text Label
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Size = UDim2.new(1, -30, 0, 30)
+    StatusLabel.Position = UDim2.new(0, 15, 0, 50)
+    StatusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+    StatusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    StatusLabel.Font = Enum.Font.GothamSemibold
+    StatusLabel.TextSize = 13
+    StatusLabel.Text = "Status: Đang chờ khởi động..."
+    StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    StatusLabel.Parent = MainFrame
+
+    local StatusCorner = Instance.new("UICorner")
+    StatusCorner.CornerRadius = UDim.new(0, 6)
+    StatusCorner.Parent = StatusLabel
+
+    -- Notification Label (Popup thông báo nhỏ)
+    local NotifLabel = Instance.new("TextLabel")
+    NotifLabel.Size = UDim2.new(0, 320, 0, 45)
+    NotifLabel.Position = UDim2.new(0.5, -160, 0.1, 0)
+    NotifLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+    NotifLabel.TextColor3 = Color3.fromRGB(255, 220, 100)
+    NotifLabel.Font = Enum.Font.GothamBold
+    NotifLabel.TextSize = 14
+    NotifLabel.Text = "Notification"
+    NotifLabel.Visible = false
+    NotifLabel.Parent = ScreenGui
+
+    local NotifCorner = Instance.new("UICorner")
+    NotifCorner.CornerRadius = UDim.new(0, 8)
+    NotifCorner.Parent = NotifLabel
+
+    -- Nút Bật/Tắt Auto Farm trên Menu
+    local ToggleButton = Instance.new("TextButton")
+    ToggleButton.Size = UDim2.new(1, -30, 0, 45)
+    ToggleButton.Position = UDim2.new(0, 15, 0, 95)
+    ToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleButton.Font = Enum.Font.GothamBold
+    ToggleButton.TextSize = 14
+    ToggleButton.Text = "Auto Farm: OFF [Phím K]"
+    ToggleButton.Parent = MainFrame
+
+    local BtnCorner = Instance.new("UICorner")
+    BtnCorner.CornerRadius = UDim.new(0, 8)
+    BtnCorner.Parent = ToggleButton
+
+    local BtnStroke = Instance.new("UIStroke")
+    BtnStroke.Color = Color3.fromRGB(90, 90, 100)
+    BtnStroke.Thickness = 1
+    BtnStroke.Parent = ToggleButton
+
+    -- Nút Mobile Floating Button (Nút thu nhỏ nổi trên màn hình)
+    local MobileButton = Instance.new("TextButton")
+    MobileButton.Size = UDim2.new(0, 140, 0, 45)
+    MobileButton.Position = UDim2.new(1, -20, 1, -70)
+    MobileButton.AnchorPoint = Vector2.new(1, 1)
+    MobileButton.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+    MobileButton.BackgroundTransparency = 0.2
+    MobileButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MobileButton.Font = Enum.Font.GothamBold
+    MobileButton.TextSize = 14
+    MobileButton.Text = "Farm: OFF"
+    MobileButton.Parent = ScreenGui
+
+    local MobCorner = Instance.new("UICorner")
+    MobCorner.CornerRadius = UDim.new(0, 10)
+    MobCorner.Parent = MobileButton
+
+    local MobStroke = Instance.new("UIStroke")
+    MobStroke.Color = Color3.fromRGB(180, 40, 60)
+    MobStroke.Thickness = 1.5
+    MobStroke.Parent = MobileButton
+
+    -- Sự kiện click nút trong menu & mobile
+    ToggleButton.MouseButton1Click:Connect(function()
+        Manager:_toggleAutoFarm()
+    end)
+    MobileButton.MouseButton1Click:Connect(function()
+        Manager:_toggleAutoFarm()
+    end)
+
+    Manager.GUI.Frame = MainFrame
+    Manager.GUI.StatusLabel = StatusLabel
+    Manager.GUI.NotificationLabel = NotifLabel
+    Manager.GUI.MobileButton = MobileButton
+    Manager.GUI.MenuToggleButton = ToggleButton
+end
+
+function Manager:_updateStatus(text)
+    if Manager.GUI.StatusLabel then
+        Manager.GUI.StatusLabel.Text = "Status: " .. text
+    end
+end
+
+function Manager:_notify(text)
+    local lbl = Manager.GUI.NotificationLabel
+    if lbl then
+        lbl.Text = text
+        lbl.Visible = true
+        task.delay(3, function()
+            if lbl and lbl.Parent then
+                lbl.Visible = false
+            end
+        end)
+    end
+end
+
+-- Lấy linh kiện cửa
+function Manager:_getDoorComponents(doorModel)
+    local data = {}
+    pcall(function()
+        local doorPart = doorModel:FindFirstChild("Door")
+        if doorPart then
+            local handle = doorPart:FindFirstChild("Handle")
+            if handle then
+                data.Handle = handle
+                local att = handle:FindFirstChildWhichIsA("Attachment")
+                if att then
+                    data.Prompt = att:FindFirstChildWhichIsA("ProximityPrompt")
+                end
+            end
+        end
+    end)
+    return data
+end
+
+function Manager:_clearPathLines()
+    for _, part in pairs(Manager.Drawing.PathParts or {}) do
+        if part then part:Destroy() end
+    end
+    table.clear(Manager.Drawing.PathParts)
+    Manager.CurrentPathWaypoints = nil
+end
+
+-- Khởi tạo bảng Drawing rỗng
+Manager.Drawing = { PathParts = {} }
+
+-- Tìm cửa gần nhất
+function Manager:_findNearestActiveDoor()
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+
+    local nearestDoor = nil
+    local shortestDistance = math.huge
+
+    for doorModel, _ in pairs(Manager.ActiveDoors) do
+        local comp = Manager:_getDoorComponents(doorModel)
+        if comp.Prompt and comp.Prompt.Enabled and comp.Handle then
+            local path = PathfindingService:CreatePath({
+                AgentRadius = 3,
+                AgentHeight = 6,
+                AgentCanJump = true
+            })
+            local success = pcall(function()
+                path:ComputeAsync(root.Position, comp.Handle.Position)
+            end)
+            if success and path.Status == Enum.PathStatus.Success then
+                local waypoints = path:GetWaypoints()
+                if #waypoints > 0 then
+                    local dist = 0
+                    for i = 1, #waypoints - 1 do
+                        dist = dist + (waypoints[i].Position - waypoints[i+1].Position).Magnitude
+                    end
+                    if shortestDistance > dist then
+                        shortestDistance = dist
+                        nearestDoor = doorModel
+                    end
+                end
+            end
+        end
+    end
+    return nearestDoor
+end
+
+-- Server Hop (Đổi Server)
+function Manager:_serverHop()
+    Manager:_notify("Hết cửa! Đang tìm server mới...")
+    if game:GetService("RunService"):IsStudio() then
+        Manager:_notify("ServerHop không chạy trong Studio.")
+        return
+    end
+
+    local placeId = game.PlaceId
+    local jobId = game.JobId
+    local servers = {}
+    
+    local success, result = pcall(function()
+        return game:HttpGet("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100&excludeFullGames=true")
+    end)
+    if not success then return end
+
+    local decoded = pcall(function() return HttpService:JSONDecode(result) end)
+    if decoded and decoded.data then
+        for _, srv in ipairs(decoded.data) do
+            if type(srv) == "table" and srv.id ~= jobId and srv.playing < srv.maxPlayers then
+                table.insert(servers, srv)
+            end
+        end
+    end
+
+    if #servers == 0 then
+        Manager:_notify("Không tìm thấy server phù hợp.")
+        return
+    end
+
+    table.sort(servers, function(a, b) return a.playing < b.playing end)
+    local targetServer = servers[1]
+
+    Manager:_notify(string.format("Đang đổi sang server: %d/%d người", targetServer.playing, targetServer.maxPlayers))
+    pcall(queueAutoFarmScript)
+    
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, targetServer.id, LocalPlayer)
+    end)
+end
+
+-- Vòng lặp Auto Farm chính
+function Manager:_autoFarmLoop()
+    local attempts = 0
+    repeat
+        if not Manager.Config.AutoFarmEnabled then break end
+        
+        local cancelled = false
+        local function cancelFlag() cancelled = true end
+
+        while true do
+            task.wait()
+            local char = LocalPlayer.Character
+            local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+            if not humanoid or humanoid.Health <= 0 then
+                Manager:_updateStatus("Đang chờ hồi sinh...")
+                task.wait(1)
+                break
+            end
+
+            Manager:_updateStatus("Đang tìm cửa Halloween...")
+            local nearestDoor = Manager:_findNearestActiveDoor()
+            if nearestDoor then
+                attempts = 0
+                local comp = Manager:_getDoorComponents(nearestDoor)
+                if comp.Handle then
+                    Manager:_updateStatus("Đang tính toán đường đi...")
+                    local path = PathfindingService:CreatePath({ AgentRadius = 3, AgentHeight = 6, AgentCanJump = true })
+                    local psuccess = pcall(function()
+                        path:ComputeAsync(char.HumanoidRootPart.Position, comp.Handle.Position)
+                    end)
+
+                    if psuccess and path.Status == Enum.PathStatus.Success then
+                        local waypoints = path:GetWaypoints()
+                        Manager.CurrentPathWaypoints = waypoints
+
+                        for idx, pt in ipairs(waypoints) do
+                            if not Manager.Config.AutoFarmEnabled then cancelFlag() break end
+                            Manager:_updateStatus(string.format("Di chuyển tới waypoint %d/%d", idx, #waypoints))
+                            
+                            if pt.Action == Enum.PathWaypointAction.Jump then
+                                humanoid.Jump = true
+                            end
+                            humanoid:MoveTo(pt.Position)
+
+                            -- Chờ tới điểm
+                            local timeoutClock = os.clock() + Manager.Config.WAYPOINT_TIMEOUT
+                            local reached = false
+                            while os.clock() < timeoutClock and Manager.Config.AutoFarmEnabled do
+                                if (Vector3.new(char.HumanoidRootPart.Position.X, 0, char.HumanoidRootPart.Position.Z) - Vector3.new(pt.Position.X, 0, pt.Position.Z)).Magnitude < Manager.Config.WAYPOINT_ACCEPTANCE_RADIUS then
+                                    reached = true
+                                    break
+                                end
+                                RunService.Heartbeat:Wait()
+                            end
+                            if not reached then cancelFlag() break end
+                        end
+
+                        if cancelled then break end
+
+                        -- Mở cửa bằng Prompt
+                        if comp.Prompt and comp.Prompt.Enabled then
+                            if (comp.Handle.Position - char.HumanoidRootPart.Position).Magnitude <= Manager.Config.FARM_TRIGGER_DISTANCE then
+                                Manager:_updateStatus("Đang mở cửa...")
+                                pcall(function() fireproximityprompt(comp.Prompt) end)
+                                task.wait(0.5)
+                            end
+                        end
+                        Manager.CurrentPathWaypoints = nil
+                    end
+                end
+            else
+                Manager:_updateStatus("Không tìm thấy cửa hoạt động...")
+                task.wait(0.5)
+                attempts = attempts + 0.5
+                if attempts >= Manager.Config.SERVER_HOP_TIMEOUT then
+                    Manager.Config.AutoFarmEnabled = false
+                    Manager:_serverHop()
+                    break
+                end
+            end
+            break
+        end
+    until not Manager.Config.AutoFarmEnabled
+
+    Manager:_updateStatus("Auto Farm: OFF")
+    if Manager.GUI.MobileButton then Manager.GUI.MobileButton.Text = "Farm: OFF" end
+    if Manager.GUI.MenuToggleButton then Manager.GUI.MenuToggleButton.Text = "Auto Farm: OFF [Phím K]" end
+    
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then hum.WalkSpeed = Manager.Config.NORMAL_SPEED end
+end
+
+function Manager:_toggleAutoFarm()
+    Manager.Config.AutoFarmEnabled = not Manager.Config.AutoFarmEnabled
+    local stateText = Manager.Config.AutoFarmEnabled and "ON" or "OFF"
+
+    if Manager.GUI.MobileButton then Manager.GUI.MobileButton.Text = "Farm: " .. stateText end
+    if Manager.GUI.MenuToggleButton then Manager.GUI.MenuToggleButton.Text = "Auto Farm: " .. stateText .. " [Phím K]" end
+
+    if Manager.Config.AutoFarmEnabled then
+        Manager:_notify("Auto Farm: ON")
+        Manager:_updateStatus("Đang khởi động...")
+        task.spawn(function() Manager:_autoFarmLoop() end)
+    else
+        Manager:_notify("Auto Farm: OFF")
+    end
+end
+
+function Manager:Watch(door)
+    if door and door.Name == "HalloweenDoor" then
+        if not Manager.ActiveDoors[door] then
+            Manager.ActiveDoors[door] = true
+        end
+    end
+end
+
+function Manager:Unwatch(door)
+    Manager.ActiveDoors[door] = nil
+end
+
+function Manager:_initializeInput()
+    table.insert(Manager.Connections, UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Manager.Config.AUTO_FARM_TOGGLE_KEY then
+            Manager:_toggleAutoFarm()
+        end
+    end))
+end
+
+function Manager:Initialize()
+    Manager:_createGUI()
+    Manager:_initializeInput()
+
+    -- Chỉnh tốc độ chạy khi bật Auto Farm
+    table.insert(Manager.Connections, RunService.Heartbeat:Connect(function()
+        local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if Manager.Config.AutoFarmEnabled and hum then
+            hum.WalkSpeed = Manager.Config.FARM_SPEED
+        end
+    end))
+
+    -- Lắng nghe thêm cửa mới xuất hiện
+    table.insert(Manager.Connections, Manager.Config.DOORS_PATH.ChildAdded:Connect(function(child)
+        task.delay(Manager.Config.NEW_DOOR_WAIT_TIME, function()
+            if child and child.Parent then
+                Manager:Watch(child)
+            end
+        end)
+    end))
+
+    table.insert(Manager.Connections, Manager.Config.DOORS_PATH.ChildRemoved:Connect(function(child)
+        Manager:Unwatch(child)
+    end))
+
+    -- Quét các cửa có sẵn
+    for _, child in ipairs(Manager.Config.DOORS_PATH:GetChildren()) do
+        Manager:Watch(child)
+    end
+
+    -- Xử lý queue khi vừa tele sang server mới
+    if _G.AutoFarmQueued then
+        _G.AutoFarmQueued = nil
+        task.spawn(function()
+            Manager.Config.AutoFarmEnabled = true
+            Manager:_toggleAutoFarm()
+        end)
+    end
+
+    _G.HalloweenDoorManager = Manager
+    print("Halloween Door Manager (Cleaned Hub) Loaded successfully!")
+end
+
+-- Chạy Script
+Manager:Initialize()
